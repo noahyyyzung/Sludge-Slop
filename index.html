@@ -36,7 +36,6 @@
 
 <script type="module">
 import * as THREE from 'three';
-import { VRButton } from 'three/addons/webxr/VRButton.js';
 
 /* ---------- on-screen diagnostics (page + inside the headset) ---------- */
 const statusEl = document.getElementById('status');
@@ -58,11 +57,11 @@ if (navigator.xr) {
   navigator.xr.isSessionSupported('immersive-vr')
     .then(ok => report(ok ? 'VR supported. Press ENTER VR.' : 'VR NOT supported by this browser. Use the Meta Quest Browser on an https link.', !ok))
     .catch(e => report('VR check failed: ' + e.message, true));
-  const origRequest = navigator.xr.requestSession.bind(navigator.xr);   // surface the reason if the headset refuses the session
-  navigator.xr.requestSession = (...args) => origRequest(...args).catch(e => { reportOnce('VR session refused: ' + e.name + ' ' + e.message); throw e; });
 } else {
   report('WebXR is not available here. Open this page in the Meta Quest Browser.', true);
 }
+if (!window.isSecureContext) report('Page is not https, so VR is blocked.', true);
+if (window.self !== window.top) report('Page is inside a frame, so VR is blocked. Open the link directly.', true);
 
 /* =====================================================================
    SLUDGE SLOP  -  v0.1  (avatar + spawn island + Gorilla Tag movement)
@@ -97,11 +96,41 @@ renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 renderer.localClippingEnabled = true;
 document.body.appendChild(renderer.domElement);
+
+/* ---------- our own Enter VR button: tries progressively simpler session options and says exactly why it fails ---------- */
 {
-  const origSetSession = renderer.xr.setSession.bind(renderer.xr);       // surface renderer-side failures when entering VR
-  renderer.xr.setSession = (s) => origSetSession(s).catch(e => { reportOnce('Entering VR failed: ' + e.message); throw e; });
+  const btn = document.createElement('button');
+  btn.textContent = 'ENTER VR';
+  btn.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:14px 28px;font:700 16px system-ui,sans-serif;' +
+    'letter-spacing:2px;color:#b6ff4a;background:#1a2a10;border:2px solid #b6ff4a;border-radius:8px;cursor:pointer;z-index:999;';
+  document.body.appendChild(btn);
+  let session = null, pending = false;
+  const attempts = [
+    { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] },
+    { optionalFeatures: ['local-floor'] },
+    { requiredFeatures: ['local-floor'] },
+  ];
+  btn.addEventListener('click', async () => {
+    if (session) { session.end(); return; }
+    if (pending) return;
+    if (!navigator.xr) { report('WebXR is not available in this browser.', true); return; }
+    pending = true; btn.textContent = 'STARTING...';
+    for (const init of attempts) {
+      try { session = await navigator.xr.requestSession('immersive-vr', init); break; }
+      catch (e) { session = null; report('VR request failed (' + Object.keys(init)[0] + '): ' + e.name + ': ' + e.message, true); }
+    }
+    if (session) {
+      session.addEventListener('end', () => { session = null; btn.textContent = 'ENTER VR'; });
+      try { await renderer.xr.setSession(session); btn.textContent = 'EXIT VR'; }
+      catch (e) {
+        report('Could not start rendering in VR: ' + e.name + ': ' + e.message, true);
+        try { await session.end(); } catch (_) { /* already ended */ }
+        session = null; btn.textContent = 'ENTER VR';
+      }
+    } else btn.textContent = 'ENTER VR';
+    pending = false;
+  });
 }
-document.body.appendChild(VRButton.createButton(renderer));
 
 const scene = new THREE.Scene();
 const FOG = 0x55652f;
